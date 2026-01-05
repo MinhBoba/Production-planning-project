@@ -2,7 +2,7 @@ import pandas as pd
 from collections import defaultdict
 import os
 
-from utils.data_loader import InputData, read_excel_sheet
+from utils.data_loader import InputData, get_dataframe_from_excel
 from utils.file_handler import save_metaheuristic_result
 from metaheuristic.tabu_search import TabuSearchSolver
 
