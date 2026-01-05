@@ -172,6 +172,9 @@ if __name__ == "__main__":
         save_metaheuristic_result(best_solution, filename="result.pkl", replace=True)
         solver.print_solution_summary()
         
+        # Ensure result directory exists
+        os.makedirs('result', exist_ok=True)
+
         # Cập nhật lại list ngày thực tế nếu có trong input_data
         # Nếu load_input chưa lưu 'real_dates', ta tạo giả lập hoặc sửa load_input như trên.
         if 'real_dates' in input_data.set:
@@ -183,7 +186,8 @@ if __name__ == "__main__":
             
             pass
         
-        export_solution_to_excel(best_solution, input_data, filename="Production_Plan_Report.xlsx")
+        report_path = os.path.join('result', 'Production_Plan_Report.xlsx')
+        export_solution_to_excel(best_solution, input_data, filename=report_path)
         
     else:
         print(f"File {EXCEL_FILE} not found.")
