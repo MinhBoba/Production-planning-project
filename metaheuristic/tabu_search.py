@@ -29,7 +29,7 @@ class TabuSearchSolver:
         self.mo_moves_attempted = 0
         self.mo_moves_accepted_as_best = 0
 
-        # Build Capability Map
+        # Build Capability Map (Logic check from old code)
         param_enable = self.input.param.get("paramYenable", {})
         self.cap_map = defaultdict(set)
         for (l, s), val in param_enable.items():
@@ -63,6 +63,10 @@ class TabuSearchSolver:
                 last_iter = i
                 break
 
+            # --- OPTIMIZATION: Set Fast Fail Threshold ---
+            # Cập nhật chi phí tốt nhất cho Evaluator để nó biết đường cắt tỉa nhánh tồi
+            self.evaluator.set_pruning_best(self.best_cost)
+
             # 1. Generate Neighbors
             neighbors = self.neighbor_gen.generate_neighbors(
                 self.current_solution, 
@@ -85,7 +89,7 @@ class TabuSearchSolver:
                 
                 if is_best_ever or is_not_tabu:
                     self.current_solution = neighbor
-                    chosen_move_is_mo = 'type' in neighbor # Check tag from Generator
+                    chosen_move_is_mo = 'type' in neighbor 
                     self.tabu_list.append(move)
                     
                     if is_best_ever:
@@ -120,6 +124,8 @@ class TabuSearchSolver:
         print("="*50)
         
         self.best_solution['is_final_check'] = True
+        # Đặt lại ngưỡng về vô cực để lần kiểm tra cuối cùng không bị cắt tỉa nhầm
+        self.evaluator.set_pruning_best(float('inf'))
         self.best_solution = self.evaluator.repair_and_evaluate(self.best_solution)
         return self.best_solution
 
@@ -174,7 +180,6 @@ class TabuSearchSolver:
     def print_solution_summary(self, solution=None):
         sol = solution or self.best_solution
         if not sol: print("No solution."); return
-        
         setup_cost = len(sol.get('changes', {})) * self.input.param['Csetup']
         print(f"Tổng chi phí: {sol['total_cost']:,.2f}")
         print(f"Setup Cost: {setup_cost:,.2f}")
