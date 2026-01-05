@@ -11,7 +11,7 @@ def load_input(excel_path):
     data = InputData()
     
     # 1. Styles
-    df_s = read_excel_sheet(excel_path, 'style_input', header=0).dropna(subset=['Style'])
+    df_s = get_dataframe_from_excel(excel_path, 'style_input', header=0).dropna(subset=['Style'])
     data.set['setS'] = df_s['Style'].astype(str).unique().tolist()
     data.param['paramSAM'] = df_s.set_index('Style')['SAM'].to_dict()
     data.param['paramTfabprocess'] = df_s.set_index('Style')['Fabric Processing Time'].fillna(1).to_dict()
@@ -19,7 +19,7 @@ def load_input(excel_path):
     data.param['Plate'] = {s: 50.0 for s in data.set['setS']}
 
     # 2. Lines
-    df_l = read_excel_sheet(excel_path, 'line_input', header=0).dropna(subset=['Line'])
+    df_l = get_dataframe_from_excel(excel_path, 'line_input', header=0).dropna(subset=['Line'])
     data.set['setL'] = df_l['Line'].astype(str).unique().tolist()
     data.param['paramN'] = df_l.set_index('Line')['Sewer'].to_dict()
     data.param['paramExp0'] = df_l.set_index('Line')['Experience'].fillna(0).to_dict()
@@ -32,7 +32,7 @@ def load_input(excel_path):
                 data.param['paramY0'][(str(row['Line']), s)] = 1 if s == row['Current Style'] else 0
 
     # 3. Time Horizon (Header is on row 2 -> index 1)
-    df_t = read_excel_sheet(excel_path, 'line_date_input', header=1).dropna(subset=['Date', 'Line'])
+    df_t = get_dataframe_from_excel(excel_path, 'line_date_input', header=1).dropna(subset=['Date', 'Line'])
     df_t['Date'] = pd.to_datetime(df_t['Date'], errors='coerce').dt.date
     unique_dates = sorted(df_t['Date'].dropna().unique())
     data.set['setT'] = list(range(1, len(unique_dates) + 1))
@@ -44,7 +44,7 @@ def load_input(excel_path):
             data.param['paramH'][(str(row['Line']), date_map[row['Date']])] = float(row.get('Working Hour', 0))
 
     # 4. Demand
-    df_d = read_excel_sheet(excel_path, 'order_input', header=0)
+    df_d = get_dataframe_from_excel(excel_path, 'order_input', header=0)
     data.param['paramD'] = defaultdict(float)
     for _, row in df_d.iterrows():
         s, qty = row.get('Style2'), row.get('Sum') # Adjusted col names based on your JSON
@@ -54,8 +54,8 @@ def load_input(excel_path):
             data.param['paramD'][(s, t)] += float(qty)
 
     # 5. Capabilities & Experience Matrix
-    df_cap = read_excel_sheet(excel_path, 'enable_style_line_input', header=0)
-    df_lexp = read_excel_sheet(excel_path, 'line_style_input', header=1)
+    df_cap = get_dataframe_from_excel(excel_path, 'enable_style_line_input', header=0)
+    df_lexp = get_dataframe_from_excel(excel_path, 'line_style_input', header=1)
     
     data.param['paramYenable'] = {}
     data.param['paramLexp'] = {}
