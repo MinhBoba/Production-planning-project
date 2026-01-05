@@ -49,9 +49,52 @@ def load_input(excel_path):
     for _, row in df_d.iterrows():
         s, qty = row.get('Style2'), row.get('Sum') # Adjusted col names based on your JSON
         if s in data.set['setS'] and pd.notna(qty):
-            dd = pd.to_datetime(row.get('Exf-SX'), errors='coerce').dt.date
+            # Robust parse: pd.to_datetime may return a Timestamp (scalar) when iterating rows.
+            dt_parsed = pd.to_datetime(row.get('Exf-SX'), errors='coerce')
+            if pd.isna(dt_parsed):
+                dd = None
+            else:
+                # If Timestamp or datetime, use .date(); if Series-like, handle .dt
+                if hasattr(dt_parsed, 'date'):
+                    try:
+                        dd = dt_parsed.date()
+                    except Exception:
+                        dd = None
+                elif hasattr(dt_parsed, 'dt'):
+                    try:
+                        dd = dt_parsed.dt.date
+                    except Exception:
+                        dd = None
+                else:
+                    dd = None
+
             t = date_map.get(dd, data.set['setT'][-1])
             data.param['paramD'][(s, t)] += float(qty)
+
+    # 4b. Fabric arrivals per style and time (paramF)
+    data.param['paramF'] = defaultdict(float)
+    for _, row in df_d.iterrows():
+        s, qty = row.get('Style2'), row.get('Sum')
+        if s in data.set['setS'] and pd.notna(qty):
+            dt_fab = pd.to_datetime(row.get('Fabric start ETA RG'), errors='coerce')
+            if pd.isna(dt_fab):
+                dd_f = None
+            else:
+                if hasattr(dt_fab, 'date'):
+                    try:
+                        dd_f = dt_fab.date()
+                    except Exception:
+                        dd_f = None
+                elif hasattr(dt_fab, 'dt'):
+                    try:
+                        dd_f = dt_fab.dt.date
+                    except Exception:
+                        dd_f = None
+                else:
+                    dd_f = None
+
+            t_f = date_map.get(dd_f, data.set['setT'][-1])
+            data.param['paramF'][(s, t_f)] += float(qty)
 
     # 5. Capabilities & Experience Matrix
     df_cap = get_dataframe_from_excel(excel_path, 'enable_style_line_input', header=0)
