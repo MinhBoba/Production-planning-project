@@ -140,6 +140,68 @@ class SolutionVisualizer:
         plt.close()
         return None
 
+    def plot_backlog(
+        self,
+        solution: Dict,
+        save_path: Optional[str] = None,
+        return_base64: bool = False,
+    ) -> Optional[str]:
+        """
+        Plot final backlog quantity per style as a bar chart.
+
+        Parameters
+        ----------
+        solution : Dict
+            Solution dictionary containing 'final_backlog'
+        save_path : str, optional
+            Path to save the figure
+        return_base64 : bool
+            If True, return base64-encoded image
+
+        Returns
+        -------
+        str or None
+            Base64-encoded image if `return_base64=True`
+        """
+        if not solution:
+            print("No solution available to visualize backlog.")
+            return None
+
+        backlog = solution.get('final_backlog', {})
+        if not backlog:
+            print("No backlog data found in solution.")
+            return None
+
+        styles = sorted(list(backlog.keys()))
+        qtys = [backlog[s] for s in styles]
+
+        fig, ax = plt.subplots(figsize=(max(8, len(styles) * 0.4), 6))
+        bars = ax.bar(styles, qtys, color='#2E86AB', edgecolor='black', alpha=0.9)
+
+        ax.set_title('Final Backlog per Style', fontsize=14, fontweight='bold')
+        ax.set_ylabel('Quantity', fontsize=12)
+        ax.set_xticks(range(len(styles)))
+        ax.set_xticklabels(styles, rotation=45, ha='right')
+        ax.grid(axis='y', linestyle='--', alpha=0.3)
+
+        # Annotate bars
+        for bar in bars:
+            h = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width() / 2, h + max(1, h * 0.01), f'{h:,.0f}',
+                    ha='center', va='bottom', fontsize=9)
+
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+
+        if return_base64:
+            return self._fig_to_base64(fig)
+
+        plt.show()
+        plt.close()
+        return None
+
     def visualize_schedule(
         self, 
         solution: Dict,
