@@ -24,6 +24,14 @@ def generate_hex_colors(names):
     return color_map
 
 def export_solution_to_excel(solution, input_data, filename="Line_Schedule.xlsx"):
+    dates = sorted(list(input_data.set['setT']))
+    
+    # Logic lấy tên ngày
+    date_headers = []
+    if 'real_dates' in input_data.set and len(input_data.set['real_dates']) == len(dates):
+        date_headers = [d.strftime("%b %d") for d in input_data.set['real_dates']]
+    else:
+        date_headers = [f"T{t}" for t in dates]
     """
     Xuất kết quả lập kế hoạch ra Excel với định dạng Gantt chart.
     """
@@ -95,7 +103,6 @@ def export_solution_to_excel(solution, input_data, filename="Line_Schedule.xlsx"
         workbook = writer.book
         worksheet = writer.sheets['Line-Schedule']
         
-        # --- Định dạng ---
         
         # Format chung
         center_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
