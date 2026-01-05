@@ -3,9 +3,7 @@ import os
 import pyomo.environ as pyo
 from pyomo.environ import value
 
-# ==========================================
 # PART 1: PYOMO MODEL HANDLERS
-# ==========================================
 
 def save_model_solution(model, filename="solution.pkl", folder='result', replace=False):
     """
@@ -46,9 +44,7 @@ def load_model_solution(model, filename="solution.pkl", folder='result'):
     print(f"Loaded solution from {file_path}")
 
 
-# ==========================================
 # PART 2: GENERAL / METAHEURISTIC HANDLERS
-# ==========================================
 
 def save_metaheuristic_result(result, filename="metaheuristic.pkl", folder='result', replace=False):
     """
@@ -77,3 +73,5 @@ def load_metaheuristic_result(filename="metaheuristic.pkl", folder='result'):
         
     with open(file_path, "rb") as f:
         return pickle.load(f)
+
+save_solution_to_pickle = save_model_solution
