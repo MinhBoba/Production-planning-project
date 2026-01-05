@@ -165,7 +165,7 @@ if __name__ == "__main__":
         
         # 2. Solve
         print("Solving...")
-        solver = TabuSearchSolver(input_data, max_iter=100, tabu_tenure=10)
+        solver = TabuSearchSolver(input_data, max_iter=10000, tabu_tenure=10, max_time=600)
         best_solution = solver.solve()
         
         # 3. Save & Report
