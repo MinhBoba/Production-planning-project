@@ -8,6 +8,7 @@ class ALNSOperator:
     Evaluator & Repairer tối ưu:
     - Integer ID Mapping: Tăng tốc độ so sánh và random.
     - Fast Fail: Cắt tỉa các nhánh kém chất lượng sớm.
+    - Look-ahead Logic: Xử lý thông minh việc chuyển đổi khi thiếu nguyên liệu.
     """
 
     def __init__(self, input_data, cap_map, discount_alpha):
@@ -115,11 +116,12 @@ class ALNSOperator:
 
     def repair_and_evaluate(self, solution):
         """
-        Evaluator tích hợp Fast Fail và xử lý trên ID Integer.
+        Main simulation loop: Calculate cost, inventory, and handle constraints.
         """
         assignment = solution.get('assignment', {})
         
-        # --- REPAIR ---
+        # --- REPAIR PHASE ---
+        # Ensure all assignments are valid based on capability
         for (l, t), s_id in list(assignment.items()):
             if isinstance(s_id, str): s_id = self.style_to_id.get(s_id)
             
@@ -128,7 +130,7 @@ class ALNSOperator:
         
         solution['assignment'] = assignment
 
-        # --- EVALUATE ---
+        # --- EVALUATE INITIALIZATION ---
         move_type = solution.get("type")
         solution.update({
             "production":  {},
@@ -138,7 +140,7 @@ class ALNSOperator:
             "efficiency":  {}
         })
 
-        # Khởi tạo Inventory & Backlog theo ID
+        # Initialize Inventory & Backlog (ID based)
         inv_fab = defaultdict(float)
         inv_prod = defaultdict(float)
         backlog = defaultdict(float)
@@ -152,6 +154,9 @@ class ALNSOperator:
 
         setup_cost = late_cost = exp_reward = 0.0
 
+        # Line States:
+        # up_exp: Flag = 1 nếu hôm nay làm việc hiệu quả -> hôm sau exp tăng
+        # exp: Kinh nghiệm tích lũy hiện tại
         line_states = {
             l: dict(current_style=self._get_initial_style_id(l),
                     exp=self.input.param["paramExp0"].get(l, 0),
@@ -161,14 +166,13 @@ class ALNSOperator:
 
         daily_prod_history = defaultdict(lambda: defaultdict(float))
         
-        # Cache Locals
+        # Cache Lookups for speed
         get_sam = self.precomputed["style_sam"].get
         get_line_cap = self.precomputed["line_capacity"]
         param_h = self.input.param["paramH"]
         param_csetup = self.input.param["Csetup"]
         param_rexp = self.input.param["Rexp"]
         
-        # Params as ID-based lookups
         param_lexp = {}
         for (l, s_name), val in self.input.param["paramLexp"].items():
             if s_name in self.style_to_id: param_lexp[(l, self.style_to_id[s_name])] = val
@@ -200,9 +204,13 @@ class ALNSOperator:
                 
         all_style_ids = list(self.style_to_id.values())
         set_l = self.input.set["setL"]
+        
+        # Helper for look-ahead
+        sorted_times = sorted(self.input.set["setT"])
+        t_index_map = {t: i for i, t in enumerate(sorted_times)}
 
-        # --- MAIN LOOP ---
-        for t in sorted(self.input.set["setT"]):
+        # --- TIME LOOP ---
+        for t in sorted_times:
             
             # --- FAST FAIL CHECK ---
             current_est_cost = setup_cost + late_cost - exp_reward
@@ -222,6 +230,9 @@ class ALNSOperator:
 
             for l in set_l:
                 st = line_states[l]
+                
+                # [UPDATE EXP] 
+                # Cộng kinh nghiệm từ kết quả làm việc của ngày hôm trước
                 st["exp"] += st["up_exp"]
                 
                 new_style_id = assignment.get((l, t))
@@ -231,7 +242,36 @@ class ALNSOperator:
                     st["up_exp"] = 0
                     continue
 
-                # Setup
+                # ==========================================================
+                # [LOOK-AHEAD LOGIC] CHẶN CHUYỂN ĐỔI NẾU KHÔNG CÓ HÀNG
+                # ==========================================================
+                # Nếu định chuyển đổi sang mã mới
+                if st["current_style"] is not None and st["current_style"] != new_style_id:
+                    
+                    # Nếu kho vải mã mới <= 0 (Sẽ bị Idle)
+                    if inv_fab[new_style_id] <= 1e-6:
+                        allow_switch = False
+                        
+                        # Kiểm tra ngày mai (t+1)
+                        current_t_idx = t_index_map[t]
+                        if current_t_idx < len(sorted_times) - 1:
+                            next_t = sorted_times[current_t_idx + 1]
+                            next_style_id = assignment.get((l, next_t))
+                            
+                            # Nếu ngày mai vẫn làm mã này -> CHO PHÉP (Setup trước)
+                            if next_style_id == new_style_id:
+                                allow_switch = True
+                        
+                        # Nếu ngày mai đổi mã khác -> CẤM CHUYỂN
+                        if not allow_switch:
+                            new_style_id = st["current_style"] # Ép giữ nguyên mã cũ
+                            assignment[(l, t)] = new_style_id  # Cập nhật vào lịch
+                
+                # ==========================================================
+                # END LOOK-AHEAD
+                # ==========================================================
+
+                # Setup Logic
                 if st["current_style"] != new_style_id:
                     solution["changes"][(l, st["current_style"], new_style_id, t)] = 1
                     setup_cost += (param_csetup * disc_factor)
@@ -250,7 +290,10 @@ class ALNSOperator:
                         cap_min = get_line_cap[l][t - 1]
                         max_p = (cap_min * eff) / sam
                         pot_prod[new_style_id].append({"line": l, "max_p": max_p})
-                        st["up_exp"] = 0
+                        
+                        # Mặc định reset flag tăng exp về 0
+                        # Flag này chỉ bật lên 1 nếu bên dưới thực sự sản xuất được
+                        st["up_exp"] = 0 
                     else:
                         st["up_exp"] = 0
                 else:
@@ -271,6 +314,10 @@ class ALNSOperator:
                     for i in items:
                         share = actual_p * i["max_p"] / total_cap
                         solution["production"][(i["line"], s_id, t)] = share
+                        
+                        # [EXP GAIN RULE]
+                        # Chỉ tăng kinh nghiệm nếu sản xuất được >= 50% năng lực
+                        # Nếu hết vải (actual_p=0) -> share=0 -> up_exp=0 -> Exp không tăng
                         if share >= 0.5 * i["max_p"]:
                             line_states[i["line"]]["up_exp"] = 1
 
@@ -290,7 +337,8 @@ class ALNSOperator:
                 if backlog[s_id] > 1e-6:
                     late_cost += (backlog[s_id] * param_plate.get(s_id, 0) * disc_factor)
 
-        # --- Convert Backlog to String keys for compatibility ---
+        # --- FINALIZE ---
+        # Convert Backlog to String keys for compatibility
         final_backlog_str = {self.id_to_style[k]: v for k, v in backlog.items() if k is not None}
         
         solution.update({
