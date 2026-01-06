@@ -1,197 +1,308 @@
 import time
 import copy
 from collections import deque, defaultdict
+import random
+
+# Import các module nội bộ
 from .neighbor_generator import NeighborGenerator
 from .ALNS_operator import ALNSOperator
+from .oscillation_strategy import StrategicOscillationHandler
 
 class TabuSearchSolver:
     def __init__(self, input_data, discount_alpha=0.05, initial_line_df=None, max_iter=1000, 
-                 tabu_tenure=10, max_time=1200, min_tenure=5, max_tenure=30, 
+                 tabu_tenure=15, max_time=1200, min_tenure=5, max_tenure=40, 
                  increase_threshold=50, decrease_threshold=10, verbose=True):
         
         self.input = input_data
         self.alpha = discount_alpha
         self.max_iter = max_iter
         self.max_time = max_time
+        self.verbose = verbose
         
-        # Tabu parameters
+        # --- TABU PARAMETERS ---
         self.current_tenure = tabu_tenure
         self.min_tenure = min_tenure
         self.max_tenure = max_tenure
         self.increase_threshold = increase_threshold
         self.decrease_threshold = decrease_threshold
+        self.tabu_list = deque(maxlen=self.current_tenure)
+        
+        # --- ADAPTIVE TRACKING ---
         self.no_improvement_counter = 0
         self.consecutive_improvements_counter = 0
-        self.verbose = verbose
-        
-        # --- SIMPLE ADAPTIVE STRATEGY ---
-        self.mo_probability = 0.6  # Xác suất ban đầu
+        self.mo_probability = 0.5  # Xác suất chạy Multi-Objective move
         self.mo_moves_attempted = 0
         self.mo_moves_accepted_as_best = 0
 
-        # Build Capability Map (Logic check)
+        # --- SETUP CAPABILITY MAP ---
+        # Map này dùng để NeighborGenerator biết Line nào làm được gì
         param_enable = self.input.param.get("paramYenable", {})
         self.cap_map = defaultdict(set)
         for (l, s), val in param_enable.items():
             if val: self.cap_map[l].add(s)
 
+        # Kiểm tra dữ liệu đầu vào cơ bản
         for l in self.input.set['setL']:
             if not self.cap_map[l]:
-                raise ValueError(f"Line {l} has no enabled styles.")
+                print(f"WARNING: Line {l} không có khả năng may mã nào (paramYenable toàn 0).")
 
-        # Initialize Components
-        # ALNSOperator bản tối ưu (Bitmask + Fast Fail)
+        # --- INITIALIZE COMPONENTS ---
+        # 1. Evaluator: Tính toán chi phí, check ràng buộc (Core logic)
         self.evaluator = ALNSOperator(input_data, self.cap_map, discount_alpha)
-        # NeighborGenerator bản Simple Adaptive
+        
+        # 2. Generator: Sinh láng giềng
         self.neighbor_gen = NeighborGenerator(input_data, self.cap_map)
+        
+        # 3. Oscillation: Xử lý phá vỡ rào cản (Infeasible -> Feasible)
+        self.oscillation_handler = StrategicOscillationHandler(input_data, self.evaluator)
 
-        # Initialize Solution
+        # --- INITIAL SOLUTION ---
+        print("Đang tạo giải pháp ban đầu...")
         self.current_solution = self.evaluator.initialize_solution()
         self.best_solution = copy.deepcopy(self.current_solution)
         self.best_cost = self.current_solution['total_cost']
-        self.tabu_list = deque(maxlen=self.current_tenure)
         self.costs = [self.best_cost]
         self.start_time = time.time()
 
     def solve(self):
-        print(f"Bắt đầu tối ưu hóa. Chi phí ban đầu: {self.best_cost:,.2f}")
-        print(f"Nhiệm kỳ Tabu ban đầu: {self.current_tenure}. Phạm vi động: [{self.min_tenure}, {self.max_tenure}]")
+        print(f"\n--- BẮT ĐẦU TỐI ƯU HÓA ---")
+        print(f"Chi phí ban đầu: {self.best_cost:,.2f}")
+        print(f"Tham số: Max Iter={self.max_iter}, Max Time={self.max_time}s")
+        print("-" * 60)
         
-        last_iter = self.max_iter
+        last_iter = 0
         
-        for i in range(self.max_iter):
+        for i in range(1, self.max_iter + 1):
+            last_iter = i
+            
+            # 1. Kiểm tra thời gian
             if time.time() - self.start_time > self.max_time:
-                print(f"\nĐã đạt giới hạn thời gian {self.max_time}s ở vòng lặp {i}.")
-                last_iter = i
+                print(f"\n[STOP] Đã đạt giới hạn thời gian tại vòng lặp {i}.")
                 break
 
-            # Cập nhật ngưỡng cắt tỉa (Fast Fail)
+            # 2. Cập nhật Fast Fail cho Evaluator
             self.evaluator.set_pruning_best(self.best_cost)
 
-            # 1. Generate Neighbors (Truyền vào mo_probability)
+            # ==========================================================
+            # A. CHIẾN LƯỢC DAO ĐỘNG (STRATEGIC OSCILLATION)
+            # ==========================================================
+            # Kích hoạt khi bế tắc (no_improve > 150) hoặc định kỳ (mỗi 250 vòng)
+            oscillation_triggered = False
+            if i > 50 and (self.no_improvement_counter > 150 or i % 250 == 0):
+                oscillation_triggered = self._perform_oscillation(i)
+            
+            # Nếu oscillation đã tìm ra hướng đi mới và reset bộ đếm, 
+            # ta có thể skip phần tìm neighbor truyền thống ở vòng này để tiết kiệm thời gian
+            if oscillation_triggered and self.no_improvement_counter == 0:
+                continue
+
+            # ==========================================================
+            # B. TÌM KIẾM LÁNG GIỀNG (NEIGHBORHOOD SEARCH)
+            # ==========================================================
             neighbors = self.neighbor_gen.generate_neighbors(
                 self.current_solution, 
                 self.mo_probability, 
                 self.evaluator
             )
             
-            if not neighbors: continue
+            if not neighbors:
+                continue
 
-            # 2. Select Best Move
+            # Sắp xếp để ưu tiên các giải pháp tốt (Best Improvement strategy)
+            # Tuy nhiên, Tabu Search thường duyệt hết, ở đây ta sort để dễ check Aspiration
             neighbors.sort(key=lambda s: s['total_cost'])
-            best_neighbor_found = False
-            improvement_this_iteration = False
+            
+            best_neighbor = None
+            found_valid_move = False
             chosen_move_is_mo = False
 
+            # Duyệt qua các láng giềng
             for neighbor in neighbors:
-                move = self._get_move_signature(self.current_solution['assignment'], neighbor['assignment'])
-                is_best_ever = neighbor['total_cost'] < self.best_cost
-                is_not_tabu = move not in self.tabu_list
+                move_signature = self._get_move_signature(self.current_solution['assignment'], neighbor['assignment'])
+                cost = neighbor['total_cost']
                 
-                if is_best_ever or is_not_tabu:
-                    self.current_solution = neighbor
-                    # Kiểm tra xem có phải là MO move không (dựa vào tag 'type')
+                # Aspiration Criteria: Nếu tốt hơn Best Global -> Bỏ qua Tabu
+                is_aspiration = cost < self.best_cost
+                is_tabu = move_signature in self.tabu_list
+                
+                if is_aspiration or not is_tabu:
+                    best_neighbor = neighbor
+                    found_valid_move = True
                     chosen_move_is_mo = (neighbor.get('type') == 'mo_move')
                     
-                    self.tabu_list.append(move)
+                    # Cập nhật Tabu List
+                    self.tabu_list.append(move_signature)
                     
-                    if is_best_ever:
+                    # Cập nhật Best Global nếu cần
+                    if is_aspiration:
                         self.best_solution = copy.deepcopy(neighbor)
-                        self.best_cost = neighbor['total_cost']
-                        improvement_this_iteration = True
-                        print(f"Vòng lặp {i}: Tìm thấy giải pháp tốt hơn! Chi phí mới: {self.best_cost:,.2f}")
+                        self.best_cost = cost
+                        self._on_improvement(i, cost, source="TabuSearch")
+                    else:
+                        self._on_no_improvement()
                     
-                    best_neighbor_found = True
-                    break
+                    break # Chọn được nước đi tốt nhất khả dĩ rồi thì dừng (Best Fit)
 
-            if not best_neighbor_found:
-                self.current_solution = neighbors[0]
-                chosen_move_is_mo = (self.current_solution.get('type') == 'mo_move')
+            # Cập nhật Current Solution
+            if found_valid_move:
+                self.current_solution = best_neighbor
+            else:
+                # Nếu tất cả đều bị Tabu (hiếm gặp), chọn cái tốt nhất bất chấp Tabu
+                # để thuật toán không bị kẹt chết
+                best_neighbor = neighbors[0]
+                self.current_solution = best_neighbor
+                # Vẫn tính là không cải thiện global
+                self._on_no_improvement()
 
             self.costs.append(self.current_solution['total_cost'])
 
-            # 3. Update Adaptive Strategies (Logic Cũ)
-            self._update_mo_strategy(chosen_move_is_mo, improvement_this_iteration)
-            self._update_tenure(improvement_this_iteration)
+            # ==========================================================
+            # C. CẬP NHẬT CHIẾN THUẬT (ADAPTIVE STRATEGY)
+            # ==========================================================
+            self._update_mo_strategy(chosen_move_is_mo, found_valid_move and best_neighbor['total_cost'] < self.costs[-2] if len(self.costs)>1 else False)
+            self._update_tenure()
 
-            if i % 100 == 0 and i > 0:
-                print(f"Vòng lặp {i}: Chi phí hiện tại = {self.current_solution['total_cost']:,.0f}, "
-                      f"Tốt nhất = {self.best_cost:,.0f}, MO Prob = {self.mo_probability:.2f}")
+            # Logging định kỳ
+            if i % 100 == 0:
+                print(f"Iter {i:5d} | Current: {self.current_solution['total_cost']:12,.0f} | Best: {self.best_cost:12,.0f} | Tenure: {self.current_tenure:2d} | MO Prob: {self.mo_probability:.2f}")
 
-        # Final Wrap-up
+        # --- KẾT THÚC ---
+        return self._finalize_solution(last_iter)
+
+    # --------------------------------------------------------------------------
+    #  HELPER METHODS
+    # --------------------------------------------------------------------------
+
+    def _perform_oscillation(self, iter_idx):
+        """Thực hiện logic dao động chiến lược: Relax -> Repair."""
+        if self.verbose:
+            print(f"  >> [Oscillation] Kích hoạt tại vòng {iter_idx}. Đang thăm dò vùng Infeasible...")
+
+        # 1. Relax: Tạo giải pháp vi phạm
+        relaxed_sol = self.oscillation_handler.explore_infeasible_region(self.best_solution)
+        
+        # 2. Repair: Sửa chữa quyết liệt
+        feasible_sol = self.oscillation_handler.aggressive_repair(relaxed_sol)
+        
+        cost_new = feasible_sol['total_cost']
+        improved = False
+        
+        # 3. Đánh giá
+        if cost_new < self.best_cost:
+            # Tìm thấy kỷ lục mới nhờ Oscillation
+            self.best_solution = copy.deepcopy(feasible_sol)
+            self.best_cost = cost_new
+            self.current_solution = feasible_sol
+            self._on_improvement(iter_idx, cost_new, source="Oscillation")
+            
+            # Reset Tabu List để tự do khai thác vùng đất mới này
+            self.tabu_list.clear()
+            improved = True
+            
+        elif self.no_improvement_counter > 200:
+            # Chế độ "Tuyệt vọng": Nếu bế tắc quá lâu, chấp nhận giải pháp từ Oscillation
+            # kể cả khi nó không tốt hơn Best Global, miễn là nó khác biệt để thoát hố.
+            # (Ở đây ta check nếu nó không quá tệ so với current)
+            if cost_new < self.current_solution['total_cost'] * 1.1:
+                if self.verbose:
+                    print(f"  >> [Oscillation] Chấp nhận giải pháp thay thế để thoát bế tắc (Cost: {cost_new:,.0f}).")
+                self.current_solution = feasible_sol
+                self.tabu_list.clear()
+                self.no_improvement_counter = 50 # Reset một phần
+                improved = True # Trả về True để báo main loop skip neighbor search vòng này
+
+        return improved
+
+    def _on_improvement(self, iter_idx, new_cost, source="Tabu"):
+        """Xử lý khi tìm thấy giải pháp tốt hơn."""
+        print(f"[{source}] Vòng {iter_idx}: Kỷ lục mới! Chi phí: {new_cost:,.2f}")
+        self.consecutive_improvements_counter += 1
+        self.no_improvement_counter = 0
+
+    def _on_no_improvement(self):
+        """Xử lý khi không tìm thấy giải pháp tốt hơn toàn cục."""
+        self.no_improvement_counter += 1
+        self.consecutive_improvements_counter = 0
+
+    def _update_tenure(self):
+        """Điều chỉnh độ dài danh sách cấm (Tabu Tenure) động."""
+        if self.consecutive_improvements_counter >= self.decrease_threshold:
+            # Đang thuận lợi -> Giảm tenure để khai thác sâu (Intensification)
+            if self.current_tenure > self.min_tenure:
+                self.current_tenure -= 1
+                self.tabu_list = deque(self.tabu_list, maxlen=self.current_tenure)
+            self.consecutive_improvements_counter = 0
+            
+        elif self.no_improvement_counter >= self.increase_threshold:
+            # Đang bế tắc -> Tăng tenure để đi xa hơn (Diversification)
+            if self.current_tenure < self.max_tenure:
+                self.current_tenure += 2
+                self.tabu_list = deque(self.tabu_list, maxlen=self.current_tenure)
+            self.no_improvement_counter = 0 # Reset để tránh tăng liên tục quá nhanh
+
+    def _update_mo_strategy(self, move_was_mo, move_was_improvement):
+        """Điều chỉnh xác suất sử dụng Multi-Objective moves."""
+        if move_was_mo:
+            self.mo_moves_attempted += 1
+            if move_was_improvement:
+                self.mo_moves_accepted_as_best += 1
+        
+        # Điều chỉnh mỗi 50 lần thử
+        if self.mo_moves_attempted > 50:
+            rate = self.mo_moves_accepted_as_best / self.mo_moves_attempted
+            if rate > 0.15: # Nếu hiệu quả khá
+                self.mo_probability = min(0.9, self.mo_probability + 0.05)
+            else:
+                self.mo_probability = max(0.2, self.mo_probability - 0.05)
+            
+            # Reset
+            self.mo_moves_attempted = 0
+            self.mo_moves_accepted_as_best = 0
+
+    def _get_move_signature(self, old_assign, new_assign):
+        """Tạo 'chữ ký' cho nước đi để lưu vào Tabu List.
+        Chữ ký là tập hợp các thay đổi: ((line, date, old_style, new_style), ...)
+        """
+        changes = []
+        for key, val in old_assign.items():
+            if new_assign[key] != val:
+                changes.append((key, val, new_assign[key]))
+        # Sort để đảm bảo tính nhất quán của tuple
+        return tuple(sorted(changes))
+
+    def _finalize_solution(self, iterations_run):
         print("\n" + "="*50)
         print("TỐI ƯU HÓA HOÀN TẤT")
-        print(f"Chi phí cuối cùng tốt nhất: {self.best_cost:,.2f}")
-        print(f"Tổng số vòng lặp: {last_iter}")
-        print(f"Thời gian chạy: {time.time() - self.start_time:.2f} giây")
+        print(f"Chi phí tốt nhất: {self.best_cost:,.2f}")
+        print(f"Tổng số vòng lặp: {iterations_run}")
+        print(f"Thời gian chạy: {time.time() - self.start_time:.2f}s")
         print("="*50)
         
-        self.best_solution['is_final_check'] = True
-        # Tắt cắt tỉa để đánh giá chính xác lần cuối
+        # Tắt cắt tỉa để tính toán chính xác lần cuối
         self.evaluator.set_pruning_best(float('inf'))
         
-        # Tính toán lại lần cuối và CONVERT ID -> STRING để người dùng đọc được
+        # 1. Tính toán lại đầy đủ các chỉ số
         final_sol_id = self.evaluator.repair_and_evaluate(self.best_solution)
+        
+        # 2. Convert ID -> String (quan trọng để xuất Excel)
         final_sol_str = self.evaluator.convert_solution_to_string_keys(final_sol_id)
         
         return final_sol_str
 
-    def _get_move_signature(self, old_assign, new_assign):
-        """Creates a tuple representing what changed."""
-        return tuple(sorted([
-            (k, old_assign[k], new_assign[k]) 
-            for k in old_assign if old_assign[k] != new_assign[k]
-        ]))
-
-    def _update_tabu_list_capacity(self):
-        if self.tabu_list.maxlen != self.current_tenure:
-            self.tabu_list = deque(self.tabu_list, maxlen=self.current_tenure)
-
-    def _update_mo_strategy(self, move_was_mo, move_led_to_improvement):
-        """Logic Adaptive cũ: Tăng/Giảm xác suất dựa trên thống kê."""
-        if move_was_mo:
-            self.mo_moves_attempted += 1
-            if move_led_to_improvement:
-                self.mo_moves_accepted_as_best += 1
-        
-        # Điều chỉnh sau mỗi 20 lần thử MO
-        if self.mo_moves_attempted > 20:
-            success_rate = self.mo_moves_accepted_as_best / self.mo_moves_attempted
-            
-            if success_rate > 0.1: # Nếu hiệu quả > 10%, tăng cường dùng
-                self.mo_probability = min(0.95, self.mo_probability + 0.05)
-            else: # Nếu không hiệu quả, giảm bớt
-                self.mo_probability = max(0.2, self.mo_probability - 0.05)
-            
-            # Reset chu kỳ thống kê (reset về 0 mỗi 100 lần để làm mới chiến thuật)
-            if self.mo_moves_attempted > 100:
-                self.mo_moves_attempted = 0
-                self.mo_moves_accepted_as_best = 0
-
-    def _update_tenure(self, improvement_this_iteration):
-        if improvement_this_iteration:
-            self.consecutive_improvements_counter += 1
-            self.no_improvement_counter = 0
-            if self.consecutive_improvements_counter >= self.decrease_threshold:
-                if self.current_tenure > self.min_tenure:
-                    self.current_tenure = max(self.min_tenure, self.current_tenure - 1)
-                    self._update_tabu_list_capacity()
-                    if self.verbose: print(f"  -> Cải thiện liên tục. Nhiệm kỳ giảm xuống: {self.current_tenure}")
-                self.consecutive_improvements_counter = 0
-        else:
-            self.no_improvement_counter += 1
-            self.consecutive_improvements_counter = 0
-            if self.no_improvement_counter >= self.increase_threshold:
-                if self.current_tenure < self.max_tenure:
-                    self.current_tenure = min(self.max_tenure, self.current_tenure + 2)
-                    self._update_tabu_list_capacity()
-                    if self.verbose: print(f"  -> Không cải thiện. Nhiệm kỳ tăng lên: {self.current_tenure}")
-                self.no_improvement_counter = 0
-
     def print_solution_summary(self, solution=None):
-        sol = solution or self.best_solution
-        if not sol: print("No solution."); return
+        sol = solution or self.best_solution # solution này nên là dạng String keys (sau khi finalize)
+        if not sol: 
+            print("Chưa có giải pháp nào.")
+            return
         
-        setup_cost = len(sol.get('changes', {})) * self.input.param['Csetup']
-        print(f"Tổng chi phí: {sol['total_cost']:,.2f}")
-        print(f"Setup Cost: {setup_cost:,.2f}")
+        # Lưu ý: Nếu gọi hàm này trước khi finalize, sol có thể đang dùng ID
+        # Nên check an toàn
+        total = sol.get('total_cost', 0)
+        setup = sol.get('total_setup', 0)
+        late = sol.get('total_late', 0)
+        exp = sol.get('total_exp', 0)
+        
+        print(f"Tổng chi phí: {total:,.2f}")
+        print(f"  - Chi phí Setup: {setup:,.2f}")
+        print(f"  - Phạt trễ hạn:  {late:,.2f}")
+        print(f"  - Thưởng kinh nghiệm: {exp:,.2f}")
