@@ -1,26 +1,23 @@
-# metaheuristic/oscillation_strategy.py
 import random
 import copy
 
 class StrategicOscillationHandler:
     def __init__(self, input_data, evaluator):
         self.input = input_data
-        self.evaluator = evaluator # Cần evaluator để check ID và ràng buộc
+        self.evaluator = evaluator
         self.lines = list(self.input.set['setL'])
         self.times = sorted(list(self.input.set['setT']))
 
     def explore_infeasible_region(self, current_solution):
         """
-        Bước 1: Relax - Tạo ra giải pháp không khả thi.
-        Chiến thuật: Lấy các Style đang bị trễ hàng (Backlog cao) và ép buộc gán vào 
-        các Line ngẫu nhiên, BẤT CHẤP việc Line đó có làm được (enable) hay không.
+        [RELAX] Tạo ra giải pháp vi phạm ràng buộc.
+        Mục tiêu: Đẩy các style đang bị trễ (backlog) vào lịch sản xuất bất chấp capability.
         """
         shaken_solution = copy.deepcopy(current_solution)
         assignment = shaken_solution['assignment']
         
-        # Tìm các style đang bị backlog nặng nhất
+        # Lấy danh sách style đang bị backlog (đổi tên sang ID)
         backlog_map = current_solution.get('final_backlog', {})
-        # Chuyển backlog key từ tên Style sang ID (nếu đang là string)
         high_risk_ids = []
         for s_name, qty in backlog_map.items():
             if qty > 0:
@@ -28,78 +25,80 @@ class StrategicOscillationHandler:
                 if s_id is not None:
                     high_risk_ids.append(s_id)
         
+        # Nếu không có backlog thì quậy ngẫu nhiên
         if not high_risk_ids:
-            # Nếu không có backlog, thử random đảo lộn một vùng thời gian
             return self._random_perturbation(shaken_solution)
 
-        # Thực hiện "ép" gán (Infeasible Move)
-        # Chọn ngẫu nhiên 5-10% số slot thời gian để ép style vào
-        num_changes = max(5, int(len(self.lines) * len(self.times) * 0.05))
+        # Ép style bị trễ vào các vị trí ngẫu nhiên (Infeasible Injection)
+        # Số lượng thay đổi khoảng 5-8% tổng số slot
+        num_changes = max(5, int(len(self.lines) * len(self.times) * 0.08))
         
         for _ in range(num_changes):
             l = random.choice(self.lines)
             t = random.choice(self.times)
             s_forced = random.choice(high_risk_ids)
             
-            # Gán trực tiếp không cần kiểm tra _is_allowed
+            # Gán trực tiếp, bỏ qua kiểm tra _is_allowed
             assignment[(l, t)] = s_forced
             
         return shaken_solution
 
     def _random_perturbation(self, solution):
-        """Hàm phụ: Nếu không có backlog thì đảo lộn ngẫu nhiên để tạo dao động"""
+        """Đảo lộn ngẫu nhiên khi không có backlog để phá vỡ cấu trúc hiện tại."""
         assignment = solution['assignment']
-        for _ in range(10):
+        all_style_ids = list(self.evaluator.style_to_id.values())
+        
+        for _ in range(15):
             l = random.choice(self.lines)
             t = random.choice(self.times)
-            # Random bất kỳ style nào có trong hệ thống
-            s_id = random.choice(list(self.evaluator.style_to_id.values()))
+            s_id = random.choice(all_style_ids)
             assignment[(l, t)] = s_id
         return solution
 
     def aggressive_repair(self, infeasible_solution):
         """
-        Bước 2: Repair - Sửa chữa để đưa về vùng khả thi.
-        Chiến thuật: Duyệt qua các slot vi phạm capability.
-        Thử swap style vi phạm sang một Line khác CÓ THỂ làm được style đó.
+        [REPAIR] Sửa chữa quyết liệt để đưa giải pháp về khả thi.
+        Logic: Nếu Line A giữ Style X (sai), tìm Line B (đúng) để swap X sang,
+        kể cả khi phải đẩy Style Y của Line B ra ngoài.
         """
         repaired_assign = copy.deepcopy(infeasible_solution['assignment'])
         
-        # Duyệt tìm vi phạm
+        # Duyệt qua toàn bộ lưới
         for l in self.lines:
             for t in self.times:
                 s_id = repaired_assign.get((l, t))
                 
-                # Nếu Line l không được phép may Style s_id (Vi phạm Infeasible)
+                # Nếu gặp vị trí vi phạm (Line l không may được Style s_id)
                 if s_id is not None and not self.evaluator._is_allowed(l, s_id):
                     
-                    # Tìm cứu viện: Tìm line khác (l_target) tại cùng thời điểm t có thể may s_id
+                    # Tìm "cứu viện": Các line khác có thể may s_id tại thời điểm t
                     candidates = [
-                        candidate_l for candidate_l in self.lines 
-                        if candidate_l != l and self.evaluator._is_allowed(candidate_l, s_id)
+                        cl for cl in self.lines 
+                        if cl != l and self.evaluator._is_allowed(cl, s_id)
                     ]
                     
                     fixed = False
                     if candidates:
-                        # Chọn một line cứu viện ngẫu nhiên
+                        # Chọn ngẫu nhiên một người cứu viện
                         l_target = random.choice(candidates)
                         s_target_current = repaired_assign.get((l_target, t))
                         
-                        # Swap: Đưa s_id sang l_target
+                        # -- SWAP --
+                        # 1. Đưa hàng sai (s_id) sang chỗ đúng (l_target)
                         repaired_assign[(l_target, t)] = s_id
                         
-                        # Xử lý style bị đẩy ra (s_target_current)
-                        # Nếu mang về l mà l làm được thì tốt, không thì gán random hợp lệ
+                        # 2. Xử lý hàng bị đẩy ra (s_target_current)
+                        # Nếu l làm được s_target_current thì đổi chéo, không thì random
                         if s_target_current is not None and self.evaluator._is_allowed(l, s_target_current):
                             repaired_assign[(l, t)] = s_target_current
                         else:
-                            # Nếu hoán đổi xong mà vẫn lỗi ở vị trí cũ, gán lại cái hợp lệ cho l
                             repaired_assign[(l, t)] = self.evaluator._random_allowed_style_id(l)
+                        
                         fixed = True
                     
                     if not fixed:
-                        # Nếu không tìm được ai cứu, đành reset vị trí này về random hợp lệ
+                        # Nếu không ai cứu được, đành xóa style vi phạm đi, gán style random hợp lệ cho l
                         repaired_assign[(l, t)] = self.evaluator._random_allowed_style_id(l)
 
-        # Sau khi sửa xong cấu trúc, gọi evaluator để tính toán lại chỉ số (Cost, Inventory...)
+        # Tính toán lại chi phí sau khi đã sửa xong cấu trúc
         return self.evaluator.repair_and_evaluate({'assignment': repaired_assign})
