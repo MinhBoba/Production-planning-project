@@ -1,11 +1,21 @@
 
+## License Notice
+
+This repository is **NOT open source**.
+
+The code is provided for **viewing and evaluation purposes only**.
+Copying, reuse, modification, or redistribution is **strictly prohibited**
+without explicit permission from the author.
+
+See the `LICENSE` file for full terms.
+
 ---
 
-## 3. Mathematical Model (MILP)
+## Mathematical Model (MILP)
 
 This section details the formulation used in `models/pyomo_model.py`.
 
-### 3.1. Sets and Indices
+### 1. Sets and Indices
 
 *   $l \in \mathcal{L}$: Production lines.
 *   $s \in \mathcal{S}$: Garment styles.
@@ -13,7 +23,7 @@ This section details the formulation used in `models/pyomo_model.py`.
 *   $p \in \mathcal{BP}$: Break-points of learning curve.
 *   $\mathcal{SP}$: Pairs of dissimilar styles (require setup).
 
-### 3.2. Parameters
+### 2. Parameters
 
 *   $D_{s,t}$: Demand.
 *   $F_{s,t}$: Fabric receipts.
@@ -24,12 +34,12 @@ This section details the formulation used in `models/pyomo_model.py`.
 *   $R^{\text{exp}}$: Experience reward.
 *   $\delta_t$: Discount factor.
 
-### 3.3. Decision Variables
+### 3. Decision Variables
 
 *   **Binary:** $Y_{l,s,t}$ (Assignment), $Z_{l,s',s,t}$ (Switch), $Change_{l,t}$ (Reset), $U_{l,t}$ (Utilization).
 *   **Continuous:** $P_{l,s,t}$ (Production), $Exp_{l,t}$ (Experience), $Eff_{l,t}$ (Efficiency), $B_{s,t}$ (Backlog).
 
-### 3.4. Objective Function
+### 4. Objective Function
 
 Minimize Total Discounted Cost $\mathcal{Z}$:
 
@@ -39,9 +49,9 @@ $$
 
 ---
 
-### 3.5. Constraints
+### 5. Constraints
 
-#### 1. Fabric Flow and Usage
+#### Fabric Flow and Usage
 
 **Fabric Inventory (Beginning):**
 
@@ -63,7 +73,7 @@ $$
 \sum_{l \in \mathcal{L}} P_{l,s,t} \le I_{s,t}^{\text{fab,B}}
 $$
 
-#### 2. Finished-Goods Flow
+#### Finished-Goods Flow
 
 **Product Inventory:**
 
@@ -77,7 +87,7 @@ $$
 Ship_{s,t} \le I_{s,t}^{\text{prod,B}}
 $$
 
-#### 3. Backlog Recursion
+#### Backlog Recursion
 
 **Backlog Balance:**
 
@@ -85,7 +95,7 @@ $$
 B_{s,t} = B_{s,t-1} + D_{s,t} - Ship_{s,t}
 $$
 
-#### 4. Line-Style Assignment
+#### Line-Style Assignment
 
 **Single Assignment:**
 
@@ -103,7 +113,7 @@ $$
 P_{l,s,t} \le M \cdot Y_{l,s,t}
 $$
 
-#### 5. Change-Over Logic
+#### Change-Over Logic
 
 **Detect Switch ($Z=1$):**
 
@@ -117,7 +127,7 @@ $$
 Change_{l,t} = \sum_{(s',s) \in \mathcal{SP}} Z_{l,s',s,t}
 $$
 
-#### 6. Utilization Trigger (Experience Gain)
+#### Utilization Trigger (Experience Gain)
 
 Line gains experience ($U=1$) only if production output meets threshold:
 
@@ -133,7 +143,7 @@ $$
 \sum_{s} SAM_s P_{l,s,t} - 0.5 H_{l,t} 60 N_l Eff_{l,t} - \varepsilon \le M U_{l,t}
 $$
 
-#### 7. Experience Dynamics (If-Then Logic)
+#### Experience Dynamics (If-Then Logic)
 
 **Scenario A: Change Occurs ($Change=1$) $\rightarrow$ Reset Experience**
 
@@ -155,7 +165,7 @@ $$
 Exp_{l,t} \le Exp_{l,t-1} + U_{l,t-1} + M \cdot Change_{l,t}
 $$
 
-#### 8. Learning Curve & Capacity
+#### Learning Curve & Capacity
 
 **Piecewise Linear Efficiency (SOS2):**
 
